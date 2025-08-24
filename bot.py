@@ -1,44 +1,49 @@
 import telebot
 import os
+import openai
 
-API_TOKEN = os.environ.get("API_TOKEN")
-if not API_TOKEN:
-    raise ValueError("API_TOKEN не найден! Проверь Environment Variables.")
+# --- Загрузка токенов из Environment Variables ---
+API_TOKEN = os.environ.get("API_TOKEN")      # Telegram Bot Token
+OPENAI_KEY = os.environ.get("OPENAI_KEY")    # OpenAI GPT Key
+
+if not API_TOKEN or not OPENAI_KEY:
+    raise ValueError("API_TOKEN или OPENAI_KEY не найдены! Проверь Environment Variables.")
 
 bot = telebot.TeleBot(API_TOKEN)
+openai.api_key = OPENAI_KEY
 
-# Хранилище данных пользователей и проектов
+# --- Хранилище данных пользователей и проектов ---
 data_store = {}
 
-# Приветствие и помощь
+# --- Приветствие / помощь ---
 help_text = """
 Привет! 👋 Я твой контент-бот.
 
-Команды:
-- /project Название_проекта — выбрать или создать проект
-- пост — шаблон поста
-- reels — сценарий Reels
-- сторис — идея для Stories
-- /plan — создать контент-план на неделю
-- /warmup — пример прогрева для подписчиков
-- /show — показать сохранённый контент проекта
+Просто пиши мне:
+- "Сделай пост про тему X"
+- "Составь Reels на тему Y"
+- "Придумай сторис на тему Z"
+- "Создай контент-план на неделю для проекта X"
+- "Придумай прогрев для проекта X"
+
+Я сохраню всё и смогу выдавать по проектам.
 """
 
-# Старт и помощь
 @bot.message_handler(commands=['start', 'help'])
 def start(message):
     bot.reply_to(message, help_text)
 
-# Создание/выбор проекта
+# --- Выбор/создание проекта ---
 @bot.message_handler(commands=['project'])
 def select_project(message):
-    try:
-        project_name = message.text.split(" ", 1)[1].strip()
-    except IndexError:
+    text_parts = message.text.split(maxsplit=1)
+    if len(text_parts) < 2 or not text_parts[1].strip():
         bot.reply_to(message, "❌ Укажи название проекта после команды /project")
         return
 
+    project_name = text_parts[1].strip()
     user_id = str(message.from_user.id)
+
     if user_id not in data_store:
         data_store[user_id] = {}
 
@@ -48,9 +53,9 @@ def select_project(message):
         }
 
     data_store[user_id]["current_project"] = project_name
-    bot.reply_to(message, f"✅ Выбран проект: {project_name}\nТеперь можешь писать: пост, reels, сторис.")
+    bot.reply_to(message, f"✅ Выбран проект: {project_name}\nТеперь можешь писать запросы на контент.")
 
-# Показать сохранённый контент
+# --- Показать сохранённый контент ---
 @bot.message_handler(commands=['show'])
 def show_content(message):
     user_id = str(message.from_user.id)
@@ -70,48 +75,19 @@ def show_content(message):
         response += "\n"
     bot.reply_to(message, response)
 
-# Генерация контент-плана
-@bot.message_handler(commands=['plan'])
-def generate_plan(message):
-    user_id = str(message.from_user.id)
-    if user_id not in data_store or "current_project" not in data_store[user_id]:
-        bot.reply_to(message, "❌ Сначала выбери проект через /project Название_проекта")
-        return
+# --- Основная генерация контента через GPT ---
+def generate_gpt(prompt):
+    try:
+        completion = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+        return completion.choices[0].message.content.strip()
+    except Exception as e:
+        return f"❌ Ошибка GPT: {e}"
 
-    project = data_store[user_id]["current_project"]
-    plan = (
-        "📅 Контент-план на неделю:\n"
-        "Пн: пост с личной историей\n"
-        "Вт: сторис с опросом\n"
-        "Ср: Reels с инсайтом\n"
-        "Чт: пост с полезным советом\n"
-        "Пт: сторис «лайфхак»\n"
-        "Сб: Reels с кейсом\n"
-        "Вс: пост с результатами недели"
-    )
-    data_store[user_id][project]["plans"].append(plan)
-    bot.reply_to(message, plan)
-
-# Генерация прогрева
-@bot.message_handler(commands=['warmup'])
-def generate_warmup(message):
-    user_id = str(message.from_user.id)
-    if user_id not in data_store or "current_project" not in data_store[user_id]:
-        bot.reply_to(message, "❌ Сначала выбери проект через /project Название_проекта")
-        return
-
-    project = data_store[user_id]["current_project"]
-    warmup = (
-        "🔥 Прогрев для подписчиков:\n"
-        "1. Поделиться личной болью\n"
-        "2. Рассказать, что ты ищешь решение\n"
-        "3. Спросить мнение аудитории\n"
-        "4. Подвести к будущему посту/Reels"
-    )
-    data_store[user_id][project]["warmups"].append(warmup)
-    bot.reply_to(message, warmup)
-
-# Генерация постов, Reels, сторис
+# --- Обработка всех сообщений ---
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     user_id = str(message.from_user.id)
@@ -120,21 +96,36 @@ def handle_message(message):
         return
 
     project = data_store[user_id]["current_project"]
-    text = message.text.lower()
-    response = ""
+    text = message.text.strip()
 
-    if "пост" in text:
-        response = "✍️ Шаблон поста:\n1. Крючок\n2. История/боль\n3. Решение\n4. Призыв к действию"
-        data_store[user_id][project]["posts"].append(response)
-    elif "reels" in text:
-        response = "🎬 Пример сценария Reels:\n1. Вступление — боль\n2. Поворот\n3. Короткое решение\n4. Концовка"
-        data_store[user_id][project]["reels"].append(response)
-    elif "сторис" in text:
-        response = "📱 Идея для сторис:\n— Вопрос аудитории\n— Ваш честный ответ\n— Визуальный акцент"
-        data_store[user_id][project]["stories"].append(response)
+    # --- Определяем тип запроса по ключевым словам ---
+    if "пост" in text.lower():
+        prompt = f"Сделай текст поста для Instagram: {text}"
+        result = generate_gpt(prompt)
+        data_store[user_id][project]["posts"].append(result)
+    elif "reels" in text.lower():
+        prompt = f"Придумай сценарий Reels: {text}"
+        result = generate_gpt(prompt)
+        data_store[user_id][project]["reels"].append(result)
+    elif "сторис" in text.lower():
+        prompt = f"Придумай идею для сторис: {text}"
+        result = generate_gpt(prompt)
+        data_store[user_id][project]["stories"].append(result)
+    elif "контент-план" in text.lower() or "plan" in text.lower():
+        prompt = f"Составь контент-план на неделю для проекта {project}"
+        result = generate_gpt(prompt)
+        data_store[user_id][project]["plans"].append(result)
+    elif "прогрев" in text.lower() or "warmup" in text.lower():
+        prompt = f"Придумай прогрев для подписчиков проекта {project}"
+        result = generate_gpt(prompt)
+        data_store[user_id][project]["warmups"].append(result)
     else:
-        response = "Я пока учусь 😉 Скажи: пост, reels, сторис, /plan или /warmup?"
+        # Если не поняли точно, спросим у GPT что делать
+        prompt = f"Ты контент-бот. Пользователь написал: {text}. Создай пост, Reels, сторис, контент-план или прогрев, что лучше подходит."
+        result = generate_gpt(prompt)
+        data_store[user_id][project]["posts"].append(result)
 
-    bot.reply_to(message, response)
+    bot.reply_to(message, result)
 
+# --- Запуск бота ---
 bot.polling(none_stop=True)
